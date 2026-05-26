@@ -188,7 +188,22 @@ if(!initialized)localStorage.setItem('db_initialized','1');setDb(data);setReady(
 const demoUpdate=useCallback((table,fn)=>{setDb(prev=>{if(!prev)return prev;const cur=_nullishCoalesce(prev[table],()=>(_emptyTable(table)));const next=fn(cur);try{sessionStorage.setItem('demo_db:'+table,JSON.stringify(next));}catch(_e){}
 return{...prev,[table]:next};});},[]);
 const isDemo=typeof window!=='undefined'&&window.__isDemoMode;
-return{db,ready,update:isDemo?demoUpdate:update};}
+// Функция для перезагрузки всех таблиц из Firestore — нужна после входа,
+// когда правила доступа теперь пропустят запросы (request.auth != null).
+const reloadDb=useCallback(async()=>{
+  try{
+    const vals=await Promise.all(DB_KEYS.map(k=>dbGet(k)));
+    const data={};
+    DB_KEYS.forEach((k,i)=>{
+      let v=vals[i];
+      if(OBJECT_TABLES.has(k)){if(!v||Array.isArray(v))v=null;}
+      else{if(v!==null&&!Array.isArray(v))v=null;}
+      data[k]=v!==null?v:_emptyTable(k);
+    });
+    setDb(data);
+  }catch(e){console.warn('reloadDb failed:',e.message);}
+},[]);
+return{db,ready,update:isDemo?demoUpdate:update,reloadDb};}
 ;const ACCESS={admin:['dashboard','projects','employees','clients','materials','tasks','finances','documents','users','calendar','calculator','journal','settings','backup'],manager:['dashboard','projects','employees','clients','materials','tasks','finances','documents','calendar','calculator','journal'],foreman:['dashboard','projects','tasks','documents','calendar','journal'],accountant:['dashboard','finances','materials','calculator'],demo:['dashboard','projects','employees','clients','materials','tasks','finances','documents','calendar','calculator','journal','settings'],};const NO_DEL=['manager'];const STATUS_P={planning:'Планирование',active:'В работе',paused:'Приостановлен',done:'Завершён'};const STATUS_T={todo:'Не начата',progress:'В процессе',review:'На проверке',done:'Выполнена'};const STATUS_F={pending:'Ожидает',paid:'Оплачено',overdue:'Просрочено'};const PRIO_COLOR={high:'var(--c-red)',medium:'var(--c-amber)',low:'var(--c-sage)'};const P_CHIP={planning:'chip-blue',active:'chip-teal',paused:'chip-amber',done:'chip-sage'};const T_CHIP={todo:'chip-stone',progress:'chip-blue',review:'chip-amber',done:'chip-sage'};const F_CHIP={pending:'chip-amber',paid:'chip-sage',overdue:'chip-red'};const ROLES_EMP=['Прораб','Бригадир','Инженер','Электромонтажник','Сварщик','Электрик','Водитель','Разнорабочий','Менеджер','Бухгалтер'];const EMP_STATUS={active:{label:'Работает',chip:'chip-sage'},vacation:{label:'Отпуск',chip:'chip-blue'},sick:{label:'На больничном',chip:'chip-amber'},idle:{label:'Пинает балду',chip:'chip-stone'},fired:{label:'Уволен',chip:'chip-red'},};const empStatusLabel=s=>(EMP_STATUS[s]||EMP_STATUS.active).label;const empStatusChip=s=>(EMP_STATUS[s]||EMP_STATUS.active).chip;const UNITS_MAT=['шт','м²','м³','м.п.','кг','т','л','уп','рулон','мешок'];const UNITS_EQ=['шт','компл.'];const UNITS_TOOL=['шт','компл.','набор'];const EQ_STATUS={active:'Работает',repair:'В ремонте',written_off:'Списано'};const EQ_STATUS_CHIP={active:'chip-sage',repair:'chip-amber',written_off:'chip-stone'};const TOOL_STATUS={active:'Работает',repair:'В ремонте',broken:'Не работает',lost:'Утеряно'};const TOOL_STATUS_CHIP={active:'chip-sage',repair:'chip-amber',broken:'chip-red',lost:'chip-stone'};const DOC_TYPES={project_doc:{label:'Проект',section:'project'},estimate:{label:'Смета',section:'project'},permit:{label:'Разрешение',section:'project'},contract:{label:'Договор',section:'office'},act:{label:'Акт',section:'office'},invoice:{label:'Счёт',section:'office'},other:{label:'Прочее',section:'office'},};const DOC_STATUS={draft:{label:'Черновик',color:'var(--c-stone)'},active:{label:'Действует',color:'var(--c-blue)'},signed:{label:'Подписан',color:'var(--c-sage)'},expired:{label:'Истёк',color:'var(--c-red)'},cancelled:{label:'Отменён',color:'var(--c-red)'},};const NAV=[{key:'dashboard',label:'Обзор'},{key:'projects',label:'Проекты'},{key:'tasks',label:'Задачи'},{key:'employees',label:'Сотрудники'},{key:'clients',label:'Контакты'},{key:'materials',label:'Склад'},{key:'finances',label:'Финансы'},{key:'calendar',label:'Календарь'},{key:'journal',label:'Журнал событий'},{key:'calculator',label:'Расчёты/калькуляции'},{key:'_docs',label:'Документы',sep:true},{key:'doc_projects',label:'Проектные',access:'documents',sub:true},{key:'doc_office',label:'Оперативные',access:'documents',sub:true},{key:'_sys',label:'Система',sep:true},{key:'settings',label:'Настройки',sub:true},{key:'backup',label:'Резервная копия',sub:true},{key:'users',label:'Пользователи',adminOnly:true},];const Styles=()=>(React.createElement('style',null,`
     @import url('https://fonts.googleapis.com/css2?family=Nunito:wght@400;600;700;800&family=JetBrains+Mono:wght@400;500;600&family=Open+Sans:wght@400;500;600;700&family=PT+Sans+Narrow:wght@400;700&family=PT+Serif:wght@400;700&family=Roboto+Condensed:wght@400;500;700&display=swap');
     *, *::before, *::after { box-sizing:border-box; margin:0; padding:0; }
@@ -866,6 +881,13 @@ function LoginPage({users,onLogin}){const[email,setEmail]=useState('');const[pas
   if(!_fbAuth){setErr('Firebase Auth не настроен. Откройте Настройки и подключите Firebase.');return;}
   setBusy(true);
   try{
+    // Явно ставим LOCAL-persistence перед входом — иначе сессия может не сохраниться
+    // и после reload currentUser окажется null.
+    try{
+      if(firebase&&firebase.auth&&firebase.auth.Auth&&firebase.auth.Auth.Persistence){
+        await _fbAuth.setPersistence(firebase.auth.Auth.Persistence.LOCAL);
+      }
+    }catch(_e){console.warn('setPersistence failed:',_e.message);}
     const cred=await _fbAuth.signInWithEmailAndPassword(e,pass);
     const authU=cred.user;
     // Если мы были в демо-режиме — нужно выйти из него
@@ -884,9 +906,11 @@ function LoginPage({users,onLogin}){const[email,setEmail]=useState('');const[pas
     // До входа правила Firestore отказывали, поэтому db.users мог быть пустым (только SEED).
     let liveUsers=users;
     try{
+      // Даём Firebase Auth немного времени на установку currentUser
+      await new Promise(r=>setTimeout(r,400));
       const fresh=await dbGet('users');
       if(Array.isArray(fresh)&&fresh.length>0)liveUsers=fresh;
-    }catch(_e){}
+    }catch(e){console.warn('Не удалось перечитать users:',e.message);}
     let prof=liveUsers.find(u=>u.authUid===authU.uid)||liveUsers.find(u=>(u.email||'').toLowerCase()===e.toLowerCase());
     console.log('[Login] Ищу профиль для:',{uid:authU.uid,email:e,usersCount:liveUsers.length,foundProfile:prof});
     if(!prof){
@@ -896,17 +920,9 @@ function LoginPage({users,onLogin}){const[email,setEmail]=useState('');const[pas
       return;
     }
     prof={...prof,authUid:authU.uid,email:e};
-    // Дожидаемся гарантированной фиксации сессии в IndexedDB (Firebase persistence LOCAL),
-    // иначе после reload currentUser окажется null и Firestore вернёт permission-denied.
-    try{
-      // Принудительно дёргаем getIdToken — это запускает внутренние процессы сохранения сессии
-      await authU.getIdToken(true);
-      // Подождём ещё немного на запись в IndexedDB
-      await new Promise(r=>setTimeout(r,800));
-    }catch(_e){}
+    // Гарантируем что сессия сохранилась перед onLogin
+    try{await authU.getIdToken(true);}catch(_e){}
     onLogin(prof);
-    // Перезагружаем чтобы useDB подгрузил все данные из Firestore с авторизацией
-    window.location.reload();
   }catch(ex){
     setBusy(false);
     const code=ex&&ex.code||'';
@@ -3040,7 +3056,7 @@ await dbSet('settings',{});setClearing(false);setBackupDone(false);setMsg({type:
 )
 )
 );}
-function App(){const{db,ready,update}=useDB();const[currentUser,setCurrentUser]=useState(null);const[sessLoaded,setSessLoaded]=useState(false);const[page,setPage]=useState('dashboard');const[pageHistory,setPageHistory]=useState([]);const goPage=(p,id)=>{setPageHistory(h=>[...h,{page,initId}]);if(id===null)setInitId(null);else if(id!==undefined)setInitId(id);setPage(p);};const goBack=()=>{setPageHistory(h=>{if(h.length===0)return h;const prev=h[h.length-1];setInitId(prev.initId||null);setPage(prev.page);return h.slice(0,-1);});};const navTo=p=>{setPageHistory([]);setInitId(null);setPage(p);};const[side,setSide]=useState(true);const[initId,setInitId]=useState(null);const[searchTarget,setSearchTarget]=useState(null);const[mobMenuOpen,setMobMenuOpen]=useState(false);const[showSearch,setShowSearch]=useState(false);const[collapsed,setCollapsed]=useState({_docs:true,_sys:true});const[preview,setPreview]=useState(null);const openPreview=img=>setPreview(img);const[darkMode,setDarkMode]=useState(()=>{const t=localStorage.getItem('theme');return t==='dark';});const[saveError,setSaveError]=useState(null);useEffect(()=>{window._openPreview=setPreview;},[]);useEffect(()=>{const onErr=e=>{const{table,quota,timeout}=e.detail||{};const tableLabel={tools:'Инструменты',materials:'Материалы',equipment:'Оборудование',documents:'Документы',tasks:'Задачи',finances:'Финансы',projects:'Проекты',employees:'Сотрудники',clients:'Клиенты',contractors:'Контрагенты',contacts:'Контакты',journal:'Журнал'}[table]||table;let msg;if(quota){msg=`⚠ Не удалось сохранить «${tableLabel}» в облако: превышен лимит. Локальная копия есть и отправится при следующем входе. Удалите часть фото.`;}else if(timeout){msg=`⚠ Сохранение «${tableLabel}» зависло (плохая сеть). Локальная копия в браузере есть. НЕ закрывайте приложение — попробуйте ещё раз через минуту, или дождитесь стабильной сети.`;}else{msg=`⚠ Сбой сохранения «${tableLabel}» в облако. Локальная копия есть — данные не потеряны и отправятся в облако при следующем входе.`;}
+function App(){const{db,ready,update,reloadDb}=useDB();const[currentUser,setCurrentUser]=useState(null);const[sessLoaded,setSessLoaded]=useState(false);const[page,setPage]=useState('dashboard');const[pageHistory,setPageHistory]=useState([]);const goPage=(p,id)=>{setPageHistory(h=>[...h,{page,initId}]);if(id===null)setInitId(null);else if(id!==undefined)setInitId(id);setPage(p);};const goBack=()=>{setPageHistory(h=>{if(h.length===0)return h;const prev=h[h.length-1];setInitId(prev.initId||null);setPage(prev.page);return h.slice(0,-1);});};const navTo=p=>{setPageHistory([]);setInitId(null);setPage(p);};const[side,setSide]=useState(true);const[initId,setInitId]=useState(null);const[searchTarget,setSearchTarget]=useState(null);const[mobMenuOpen,setMobMenuOpen]=useState(false);const[showSearch,setShowSearch]=useState(false);const[collapsed,setCollapsed]=useState({_docs:true,_sys:true});const[preview,setPreview]=useState(null);const openPreview=img=>setPreview(img);const[darkMode,setDarkMode]=useState(()=>{const t=localStorage.getItem('theme');return t==='dark';});const[saveError,setSaveError]=useState(null);useEffect(()=>{window._openPreview=setPreview;},[]);useEffect(()=>{const onErr=e=>{const{table,quota,timeout}=e.detail||{};const tableLabel={tools:'Инструменты',materials:'Материалы',equipment:'Оборудование',documents:'Документы',tasks:'Задачи',finances:'Финансы',projects:'Проекты',employees:'Сотрудники',clients:'Клиенты',contractors:'Контрагенты',contacts:'Контакты',journal:'Журнал'}[table]||table;let msg;if(quota){msg=`⚠ Не удалось сохранить «${tableLabel}» в облако: превышен лимит. Локальная копия есть и отправится при следующем входе. Удалите часть фото.`;}else if(timeout){msg=`⚠ Сохранение «${tableLabel}» зависло (плохая сеть). Локальная копия в браузере есть. НЕ закрывайте приложение — попробуйте ещё раз через минуту, или дождитесь стабильной сети.`;}else{msg=`⚠ Сбой сохранения «${tableLabel}» в облако. Локальная копия есть — данные не потеряны и отправятся в облако при следующем входе.`;}
 setSaveError({msg});setTimeout(()=>setSaveError(null),15000);};window.addEventListener('db-save-error',onErr);const onBeforeUnload=(e)=>{if((window.__pendingSaves||0)>0){e.preventDefault();e.returnValue='Идёт сохранение данных. Подождите пару секунд, иначе изменения могут потеряться.';return e.returnValue;}
 };window.addEventListener('beforeunload',onBeforeUnload);return()=>{window.removeEventListener('db-save-error',onErr);window.removeEventListener('beforeunload',onBeforeUnload);};},[]);useEffect(()=>{const onKey=e=>{if(e.key==='Escape')setPreview(null);};window.addEventListener('keydown',onKey);return()=>window.removeEventListener('keydown',onKey);},[]);useEffect(()=>{document.documentElement.setAttribute('data-theme',darkMode?'dark':'light');localStorage.setItem('theme',darkMode?'dark':'light');},[darkMode]);useEffect(()=>{const pref=localStorage.getItem('font_pref');if(!pref||pref==='mono')return;const stacks={narrow:"'Arial Narrow', 'Liberation Sans Narrow', 'PT Sans Narrow', 'Roboto Condensed', Arial, sans-serif",sans:"'Open Sans', 'Segoe UI', 'Helvetica Neue', Arial, sans-serif",serif:"'PT Serif', 'Georgia', 'Times New Roman', serif"
 };const s=stacks[pref];if(s){document.documentElement.style.setProperty('--ff',s);document.documentElement.style.setProperty('--fm',s);}
@@ -3103,7 +3119,11 @@ if(u.authUid&&db&&db.users){
     update('users',us=>[...us,u]);
   }
 }
-setCurrentUser(u);setPageHistory([]);setPage('dashboard');};const logout=async()=>{
+setCurrentUser(u);setPageHistory([]);setPage('dashboard');
+// Перечитываем всю базу из Firestore — теперь правила доступа пропускают запросы.
+// До этого момента (на экране логина) read мог быть запрещён и db содержала только SEED.
+if(reloadDb){setTimeout(()=>reloadDb(),100);}
+};const logout=async()=>{
 // Демо-режим: чистим sessionStorage и перезагружаем
 if(typeof window!=='undefined'&&window.__isDemoMode){
   try{
