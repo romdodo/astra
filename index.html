@@ -896,12 +896,17 @@ function LoginPage({users,onLogin}){const[email,setEmail]=useState('');const[pas
       return;
     }
     prof={...prof,authUid:authU.uid,email:e};
-    // После первого входа — перезагружаем страницу, чтобы useDB подгрузил
-    // все данные из Firestore уже с авторизацией. До этого момента правила Firestore
-    // отказывали в чтении, и db мог содержать только SEED-данные.
-    // Сохраняем профиль через sessionStorage чтобы при reload сразу зайти без повторного ввода.
+    // Дожидаемся гарантированной фиксации сессии в IndexedDB (Firebase persistence LOCAL),
+    // иначе после reload currentUser окажется null и Firestore вернёт permission-denied.
+    try{
+      // Принудительно дёргаем getIdToken — это запускает внутренние процессы сохранения сессии
+      await authU.getIdToken(true);
+      // Подождём ещё немного на запись в IndexedDB
+      await new Promise(r=>setTimeout(r,800));
+    }catch(_e){}
     onLogin(prof);
-    setTimeout(()=>{window.location.reload();},300);
+    // Перезагружаем чтобы useDB подгрузил все данные из Firestore с авторизацией
+    window.location.reload();
   }catch(ex){
     setBusy(false);
     const code=ex&&ex.code||'';
